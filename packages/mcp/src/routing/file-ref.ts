@@ -33,8 +33,9 @@ const FILE_KEY_SHAPE = /^[0-9A-Za-z]{10,}$/;
 export const isFileKeyShape = (value: string): boolean => FILE_KEY_SHAPE.test(value);
 
 /**
- * The file keys a figma.com link points at, most specific first: the branch key when the link is a
- * branch (that is what the tab shows), then the main file's key. Empty for anything else.
+ * The file key a figma.com link points at, as a one-element list (empty for anything else): the
+ * branch key for a branch link — a branch and its main file are different write targets, so a
+ * branch link must never fall back to the main file — else the file's own key.
  */
 export const fileKeysOfUrl = (raw: string): string[] => {
   let url: URL;
@@ -46,7 +47,8 @@ export const fileKeysOfUrl = (raw: string): string[] => {
   if (url.hostname !== 'figma.com' && !url.hostname.endsWith('.figma.com')) return [];
   const match = FIGMA_FILE_PATH.exec(url.pathname);
   if (match === null) return [];
-  return [match[2], match[1]].filter((k): k is string => k !== undefined && isFileKeyShape(k));
+  const key = match[2] ?? match[1];
+  return key !== undefined && isFileKeyShape(key) ? [key] : [];
 };
 
 /**
@@ -109,9 +111,9 @@ const uniqueByKey = (
  * would be another file's nodes. A URL never falls back to a name — its slug is lossy, and the
  * common case is a link to the original of a file whose copy is open.
  *
- * `connected` is the relay's own list (free, names may be null); `probe` asks each plugin for its
- * name, and is only paid for when a name has to be matched against a session that has not reported
- * one.
+ * `connected` is the relay's own list (free, names may be stale); `probe` asks each plugin for its
+ * current name and is paid for whenever a name has to be matched — a sessionId or key never pays
+ * it.
  */
 export const resolveFileRef = async (
   connected: SessionSource,
@@ -147,7 +149,7 @@ export const resolveFileRef = async (
     // be shared by the copy that is.
     const slug = reported ? null : fileSlugOfUrl(wanted);
     if (slug !== null && slugKey(slug) !== '') {
-      const named = sessions.some(s => s.fileName === null) ? await probe() : sessions;
+      const named = await probe();
       const bySlug = named.filter(
         s => s.fileName !== null && slugKey(s.fileName) === slugKey(slug),
       );
@@ -166,7 +168,9 @@ export const resolveFileRef = async (
     );
   }
 
-  const named = sessions.some(s => s.fileName === null) ? await probe() : sessions;
+  // Names are always probed: the relay's copy only refreshes on selection and page changes, so a
+  // file renamed since would be matched — or found unambiguous — by its old name.
+  const named = await probe();
   const matches = sessionsMatchingFile(named, wanted);
   const only = matches[0];
   if (matches.length === 1 && only !== undefined) return route(only, 'name');
@@ -181,7 +185,7 @@ export const resolveFileRef = async (
 
 /**
  * Re-find the file a call was routed to after its session disappeared before the call was sent —
- * the panel was closed and reopened, which mints a new sessionId. By file key when the client
+ * the panel was closed and reopened, which mints a new sessionId. Only by file key when the client
  * reported one, else by name, and only when exactly one connected file matches; otherwise it throws
  * with what is connected. Only ever used for a call the relay refused up front: a write that had
  * already been sent is never re-sent elsewhere (the relay answers that one "plugin closed before
@@ -192,8 +196,16 @@ export const recoverCallRoute = async (
   gone: CallRoute,
 ): Promise<CallRoute> => {
   const sessions = await probe();
-  const byKey = gone.fileKey === null ? null : uniqueByKey(sessions, [gone.fileKey]);
-  if (byKey !== null) return route(byKey, gone.via);
+  if (gone.fileKey !== null) {
+    // A known key is the file's identity: a same-name session with another key, or none, is a
+    // different file, and the write must not land there.
+    const byKey = uniqueByKey(sessions, [gone.fileKey]);
+    if (byKey !== null) return route(byKey, gone.via);
+    throw new FileTargetError(
+      `the file this call was routed to (file key ${gone.fileKey}) is no longer connected — its ` +
+        `Figwright panel was closed, or Figma was. Connected now: ${describeSessions(sessions)}`,
+    );
+  }
   if (gone.fileName === null) {
     throw new FileTargetError(
       `the plugin session this call was routed to (${gone.sessionId}) is gone and never reported ` +

@@ -145,6 +145,9 @@ const dispatchToSession = (
 // every sub-call to that exact session so they can't drift across plugins if routing flips
 // mid-flight. Resolving to undefined (no plugin connected) falls back to live per-call routing.
 const routedDispatch = async (): Promise<typeof dispatch> => {
+  // A call that named its file keeps the recovery-aware dispatcher, so a panel reopened mid-call
+  // is followed by every sub-call, not just the first.
+  if (getCallRoute() !== null) return dispatch;
   const sessionId = await resolveRoutingSession(dispatchCtx);
   const opts = sessionId === undefined ? {} : { sessionId };
   return (tool, args) => dispatchTool(dispatchCtx, tool, args, opts);

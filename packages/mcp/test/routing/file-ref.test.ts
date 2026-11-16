@@ -45,13 +45,12 @@ const never = (): Promise<readonly PluginSessionInfo[]> => {
 };
 
 describe('fileKeysOfUrl', () => {
-  it('reads the key of a design link, and a branch key first', () => {
+  it('reads the key of a design link, and only the branch key of a branch link', () => {
     expect(fileKeysOfUrl(`https://www.figma.com/design/${KEY_A}/Name?node-id=5-2`)).toEqual([
       KEY_A,
     ]);
     expect(fileKeysOfUrl(`https://www.figma.com/design/${KEY_A}/Name/branch/${KEY_B}/x`)).toEqual([
       KEY_B,
-      KEY_A,
     ]);
     expect(fileKeysOfUrl(`https://figma.com/file/${KEY_A}`)).toEqual([KEY_A]);
   });
@@ -84,7 +83,7 @@ describe('resolveFileRef', () => {
   it('reaches a file by the link slug when the client reports no keys (official app)', async () => {
     const noKeys = [info('s-1', 'Penpot Exporter (Community)'), info('s-2', 'Marketing')];
     const link = `https://www.figma.com/design/${KEY_B}/Penpot-Exporter--Community-?node-id=5-2`;
-    expect(await resolveFileRef(source(noKeys), never, link)).toMatchObject({
+    expect(await resolveFileRef(source(noKeys), source(noKeys), link)).toMatchObject({
       sessionId: 's-1',
       via: 'linkName',
     });
@@ -95,12 +94,12 @@ describe('resolveFileRef', () => {
   it('refuses a link slug that matches no file, or two', async () => {
     const copy = [info('s-1', 'Penpot Exporter (Community) (Copy)')];
     const link = `https://www.figma.com/design/${KEY_B}/Penpot-Exporter--Community-`;
-    await expect(resolveFileRef(source(copy), never, link)).rejects.toThrow(
+    await expect(resolveFileRef(source(copy), source(copy), link)).rejects.toThrow(
       /does not report file keys.*\(Copy\)/,
     );
     const twice = [info('s-1', 'Brand'), info('s-2', 'brand')];
     await expect(
-      resolveFileRef(source(twice), never, `https://www.figma.com/design/${KEY_B}/Brand`),
+      resolveFileRef(source(twice), source(twice), `https://www.figma.com/design/${KEY_B}/Brand`),
     ).rejects.toThrow(/matches 2 open files/);
   });
 
@@ -110,27 +109,30 @@ describe('resolveFileRef', () => {
     ).rejects.toThrow(new RegExp(`no connected file has file key ${KEY_B}`));
   });
 
+  it('never sends a branch link to its main file', async () => {
+    const branch = `https://www.figma.com/design/${KEY_A}/Brand/branch/${KEY_B}/Brand`;
+    await expect(resolveFileRef(source(sessions), never, branch)).rejects.toThrow(
+      new RegExp(`no connected file has file key ${KEY_B}`),
+    );
+  });
+
   it('matches a unique name case-insensitively', async () => {
-    expect(await resolveFileRef(source(sessions), never, '  brand ')).toMatchObject({
+    expect(await resolveFileRef(source(sessions), source(sessions), '  brand ')).toMatchObject({
       sessionId: 's-1',
       via: 'name',
     });
   });
 
-  it('probes for names only when some session has not reported one', async () => {
-    let probed = 0;
-    const unnamed = [info('s-1', 'Brand'), info('s-2', null)];
-    const probe = (): Promise<readonly PluginSessionInfo[]> => {
-      probed += 1;
-      return Promise.resolve([info('s-1', 'Brand'), info('s-2', 'Marketing')]);
-    };
-    expect((await resolveFileRef(source(unnamed), probe, 'Marketing')).sessionId).toBe('s-2');
-    expect(probed).toBe(1);
+  it("matches names against probed, current names, not the relay's stale copy", async () => {
+    const stale = [info('s-1', 'Brand'), info('s-2', 'Marketing')];
+    const renamed = source([info('s-1', 'Brand v2'), info('s-2', 'Brand')]);
+    expect((await resolveFileRef(source(stale), renamed, 'Brand v2')).sessionId).toBe('s-1');
+    expect((await resolveFileRef(source(stale), renamed, 'Brand')).sessionId).toBe('s-2');
   });
 
   it('refuses a duplicate name and lists the sessionIds to use', async () => {
     const dupes = [info('s-1', 'x'), info('s-2', 'x')];
-    await expect(resolveFileRef(source(dupes), never, 'x')).rejects.toThrow(
+    await expect(resolveFileRef(source(dupes), source(dupes), 'x')).rejects.toThrow(
       /matches 2 open files.*s-1 .*s-2/,
     );
   });
@@ -142,7 +144,7 @@ describe('resolveFileRef', () => {
 
   it('refuses nothing connected, no match and an empty selector', async () => {
     await expect(resolveFileRef(source([]), never, 'Brand')).rejects.toThrow(/no Figma file/);
-    await expect(resolveFileRef(source(sessions), never, 'Nope')).rejects.toThrow(
+    await expect(resolveFileRef(source(sessions), source(sessions), 'Nope')).rejects.toThrow(
       /no connected file matches "Nope".*Brand \[s-1\]/,
     );
     await expect(resolveFileRef(source(sessions), never, '  ')).rejects.toThrow(/file is empty/);
@@ -156,6 +158,15 @@ describe('recoverCallRoute', () => {
     fileKey: KEY_A,
     via: 'name',
   };
+
+  it('never recovers a keyed file into a same-name file with another key, or none', async () => {
+    await expect(recoverCallRoute(source([info('new', 'Brand', KEY_B)]), gone)).rejects.toThrow(
+      new RegExp(`file key ${KEY_A}\\) is no longer connected`),
+    );
+    await expect(recoverCallRoute(source([info('new', 'Brand')]), gone)).rejects.toThrow(
+      /no longer connected/,
+    );
+  });
 
   it('re-finds a reopened panel by key, then by unique name', async () => {
     expect((await recoverCallRoute(source([info('new', 'Renamed', KEY_A)]), gone)).sessionId).toBe(
