@@ -9,6 +9,7 @@ import {
   type CallRoute,
   describeCallRoute,
   fileKeysOfUrl,
+  fileSlugOfUrl,
   getCallRoute,
   recoverCallRoute,
   resolveFileRef,
@@ -80,11 +81,30 @@ describe('resolveFileRef', () => {
     expect((await resolveFileRef(source(sessions), never, KEY_A)).via).toBe('fileKey');
   });
 
-  it('refuses a link no session reports, saying why, instead of falling back to a name', async () => {
-    const noKeys = [info('s-1', 'Brand'), info('s-2', 'Marketing')];
+  it('reaches a file by the link slug when the client reports no keys (official app)', async () => {
+    const noKeys = [info('s-1', 'Penpot Exporter (Community)'), info('s-2', 'Marketing')];
+    const link = `https://www.figma.com/design/${KEY_B}/Penpot-Exporter--Community-?node-id=5-2`;
+    expect(await resolveFileRef(source(noKeys), never, link)).toMatchObject({
+      sessionId: 's-1',
+      via: 'linkName',
+    });
+    expect(fileSlugOfUrl(link)).toBe('Penpot-Exporter--Community-');
+    expect(fileSlugOfUrl(`https://www.figma.com/design/${KEY_B}`)).toBeNull();
+  });
+
+  it('refuses a link slug that matches no file, or two', async () => {
+    const copy = [info('s-1', 'Penpot Exporter (Community) (Copy)')];
+    const link = `https://www.figma.com/design/${KEY_B}/Penpot-Exporter--Community-`;
+    await expect(resolveFileRef(source(copy), never, link)).rejects.toThrow(
+      /does not report file keys.*\(Copy\)/,
+    );
+    const twice = [info('s-1', 'Brand'), info('s-2', 'brand')];
     await expect(
-      resolveFileRef(source(noKeys), never, `https://www.figma.com/design/${KEY_B}/Brand`),
-    ).rejects.toThrow(/does not report file keys/);
+      resolveFileRef(source(twice), never, `https://www.figma.com/design/${KEY_B}/Brand`),
+    ).rejects.toThrow(/matches 2 open files/);
+  });
+
+  it('refuses a link whose key is not open where keys are reported, never trying its slug', async () => {
     await expect(
       resolveFileRef(source(sessions), never, `https://www.figma.com/design/${KEY_B}/Brand`),
     ).rejects.toThrow(new RegExp(`no connected file has file key ${KEY_B}`));

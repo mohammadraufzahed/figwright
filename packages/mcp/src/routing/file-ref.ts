@@ -15,7 +15,7 @@ import { FileTargetError, type SessionSource } from './target.js';
  *
  * Precedence: the call's `file`, then the process claim, then the foreground file.
  */
-export type RouteVia = 'session' | 'fileKey' | 'name';
+export type RouteVia = 'session' | 'fileKey' | 'linkName' | 'name';
 
 export interface CallRoute {
   sessionId: string;
@@ -48,6 +48,29 @@ export const fileKeysOfUrl = (raw: string): string[] => {
   if (match === null) return [];
   return [match[2], match[1]].filter((k): k is string => k !== undefined && isFileKeyShape(k));
 };
+
+/**
+ * The file name a figma.com link carries in its slug — `Penpot-Exporter--Community-` for "Penpot
+ * Exporter (Community)" — or null. Figma writes every character it does not keep as `-`, so this is
+ * only ever compared through {@linkcode slugKey}, never shown as a name.
+ */
+export const fileSlugOfUrl = (raw: string): string | null => {
+  if (fileKeysOfUrl(raw).length === 0) return null;
+  const slug = new URL(raw.trim()).pathname.split('/')[3];
+  if (slug === undefined || slug === '' || slug === 'branch') return null;
+  try {
+    return decodeURIComponent(slug);
+  } catch {
+    return null;
+  }
+};
+
+/** A name or slug reduced to what both keep: letters and digits, lower-cased, runs joined by `-`. */
+const slugKey = (value: string): string =>
+  value
+    .toLowerCase()
+    .replaceAll(/[^\p{L}\p{N}]+/gu, '-')
+    .replaceAll(/^-+|-+$/g, '');
 
 const route = (session: PluginSessionInfo, via: RouteVia): CallRoute => ({
   sessionId: session.id,
@@ -118,12 +141,27 @@ export const resolveFileRef = async (
   if (byKey !== null) return route(byKey, 'fileKey');
   if (urlKeys.length > 0) {
     const reported = sessions.some(s => (s.fileKey ?? null) !== null);
+    // A client that reports no keys (the official desktop app, on any OS) can still be reached by
+    // link: by the file name in its slug, when exactly one open file has it. Not when keys are
+    // reported — there an unmatched key means the linked file is not open, and its name may well
+    // be shared by the copy that is.
+    const slug = reported ? null : fileSlugOfUrl(wanted);
+    if (slug !== null && slugKey(slug) !== '') {
+      const named = sessions.some(s => s.fileName === null) ? await probe() : sessions;
+      const bySlug = named.filter(
+        s => s.fileName !== null && slugKey(s.fileName) === slugKey(slug),
+      );
+      const only = bySlug[0];
+      if (bySlug.length === 1 && only !== undefined) return route(only, 'linkName');
+      if (bySlug.length > 1) throw ambiguous(`the link's file name "${slug}"`, bySlug);
+    }
     throw new FileTargetError(
       `no connected file has file key ${urlKeys.join(' or ')}. ` +
         (reported
           ? ''
           : 'This Figma client does not report file keys to Figwright (figma-linux-next does), ' +
-            'so a link cannot pick a file here. ') +
+            "and no open file has the link's file name — a link to the original does not reach " +
+            'a copy, which Figma names "… (Copy)". ') +
         `Pass a sessionId or file name from list_files instead. Connected now: ${describeSessions(sessions)}`,
     );
   }
@@ -195,4 +233,11 @@ export const updateCallRoute = (next: CallRoute): void => {
 
 /** The one line a routed result carries, naming the file that answered. */
 export const describeCallRoute = (r: CallRoute): string =>
-  `routed to ${r.fileName === null ? '(unnamed file)' : `"${r.fileName}"`} [session ${r.sessionId}] by ${r.via === 'fileKey' ? 'file key' : r.via}`;
+  `routed to ${r.fileName === null ? '(unnamed file)' : `"${r.fileName}"`} [session ${r.sessionId}] by ${VIA_LABEL[r.via]}`;
+
+const VIA_LABEL: Record<RouteVia, string> = {
+  session: 'session',
+  fileKey: 'file key',
+  linkName: "the link's file name",
+  name: 'name',
+};
