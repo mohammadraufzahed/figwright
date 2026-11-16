@@ -111,8 +111,9 @@ imported into this file — a library item's key, or its id in the library file,
 
 1. Ask the user to open the library's source file in Figma as well; the plugin connects to it like any
    other file, and `list_files` then names both.
-2. `use_file` the library file. `get_variable_defs` / `get_styles` there give each token's `key`.
-3. `use_file` the file you are building in. `import_variable({ variableKey })` /
+2. Read the library file — `get_variable_defs({ file })` / `get_styles({ file })` with its name or
+   sessionId — to get each token's `key`.
+3. Then, in the file you are building in, `import_variable({ variableKey })` /
    `import_style({ styleKey })` each token you will use, then bind or apply the `variableId` / `styleId`
    it returns — never the library file's own id.
 4. Import before any `batch`: an import cannot be rolled back, so `batch` refuses it. If an import times

@@ -28,6 +28,7 @@ import {
 import { WebSocketServer, type WebSocket } from 'ws';
 
 import { classifyWsUpgrade, isAllowedHost } from '../local-access.js';
+import { isFileKeyShape } from '../routing/file-ref.js';
 import type { PluginSessionInfo } from '../routing/sessions.js';
 import {
   RefusedUpgradeLog,
@@ -35,6 +36,20 @@ import {
   userAgentRefusalNotice,
 } from './refused-upgrades.js';
 import { DEFAULT_DISCONNECT_GRACE_MS, type Session, SessionManager } from './session.js';
+
+/**
+ * The `X-Figma-File-Key` header a Figma client may add to the plugin's WebSocket upgrade, naming
+ * the file of the tab the plugin runs in (figma-linux-next does; public plugins cannot read the
+ * key). A routing hint only — never an admission input: anything local that could forge it can
+ * already reach the relay, and the worst a forged one does is route that user's own calls wrongly.
+ * Kept to the shape of a real key so an odd value is dropped rather than echoed into results.
+ */
+export const readFileKeyHeader = (raw: string | string[] | undefined): string | null => {
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (value === undefined) return null;
+  const key = value.trim();
+  return isFileKeyShape(key) ? key : null;
+};
 
 export interface RelayOptions {
   serverVersion: string;
@@ -98,6 +113,8 @@ export class Relay {
   private heartbeatDeferrals = 0;
   private lastRequestAtMs = 0;
   private readonly refused = new RefusedUpgradeLog();
+  /** The file key the Figma client stamped on each socket's upgrade (see readFileKeyHeader). */
+  private readonly upgradeFileKeys = new WeakMap<WebSocket, string>();
 
   constructor(opts: RelayOptions) {
     this.opts = {
@@ -144,7 +161,11 @@ export class Relay {
         done(false, 403, 'Forbidden');
       },
     });
-    this.wss.on('connection', socket => this.handleConnection(socket));
+    this.wss.on('connection', (socket, req) => {
+      const fileKey = readFileKeyHeader(req.headers['x-figma-file-key']);
+      if (fileKey !== null) this.upgradeFileKeys.set(socket, fileKey);
+      this.handleConnection(socket);
+    });
     // The server re-emits the HTTP server's errors here (e.g. EMFILE on accept); unheard, an
     // 'error' event is thrown, and the leader process with every session on it goes down.
     this.wss.on('error', err => {
@@ -367,6 +388,7 @@ export class Relay {
         pageName: s.pageName,
         lastActivityAt: s.lastActivityAt,
         pluginVersion: s.clientVersion,
+        fileKey: s.fileKey,
       }));
   }
 
@@ -440,7 +462,12 @@ export class Relay {
     entry.dispatchedToSessionId = session.id;
     session.socket.send(
       encodeEnvelope(
-        createRequest({ id, sessionId: session.id, method: entry.method, params: entry.params }),
+        createRequest({
+          id,
+          sessionId: session.id,
+          method: entry.method,
+          params: entry.params,
+        }),
       ),
     );
   }
@@ -576,6 +603,7 @@ export class Relay {
       id: env.sessionId,
       socket,
       clientVersion: parsed.data.clientVersion,
+      fileKey: this.upgradeFileKeys.get(socket) ?? null,
     });
 
     session.heartbeat = new HeartbeatMonitor({
@@ -613,7 +641,9 @@ export class Relay {
       foregroundFlag: true,
       ...(compatible
         ? {}
-        : { skewNotice: pluginSkewNotice(parsed.data.clientVersion, this.opts.serverVersion) }),
+        : {
+            skewNotice: pluginSkewNotice(parsed.data.clientVersion, this.opts.serverVersion),
+          }),
     };
     this.sendResponse(socket, env, result);
     this.opts.log(`[relay] session ${session.id} hello (resumed=${resumed})`);

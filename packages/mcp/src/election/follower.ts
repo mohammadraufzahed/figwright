@@ -212,6 +212,7 @@ export class Follower {
         pageName: typeof s.pageName === 'string' ? s.pageName : null,
         lastActivityAt: typeof s.lastActivityAt === 'number' ? s.lastActivityAt : 0,
         pluginVersion: typeof s.pluginVersion === 'string' ? s.pluginVersion : 'unknown',
+        fileKey: typeof s.fileKey === 'string' ? s.fileKey : null,
       });
     }
     return out;

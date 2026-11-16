@@ -10,6 +10,13 @@ import {
 
 import type { Follower } from './election/follower.js';
 import { type Node, NodeRole } from './election/node.js';
+import {
+  type CallRoute,
+  getCallRoute,
+  recoverCallRoute,
+  resolveFileRef,
+  updateCallRoute,
+} from './routing/file-ref.js';
 import type { PluginSessionInfo } from './routing/sessions.js';
 import { getFileTarget, resolveFileTarget } from './routing/target.js';
 import { namedSessions, type SessionDispatch } from './tools/list-files.js';
@@ -223,6 +230,10 @@ export const listPluginSessions = async (
  * file must stay in that file even for its first sub-call.
  */
 export const resolveRoutingSession = async (ctx: DispatchContext): Promise<string | undefined> => {
+  // A call that named its file is pinned to it before anything else — even a conflicted node must
+  // not answer undefined here, which would run the sub-calls unpinned in whatever file is in front.
+  const callRoute = getCallRoute();
+  if (callRoute !== null) return callRoute.sessionId;
   // A conflicted node has no leader to ask (the port holder isn't answering as one) — resolve to
   // undefined so sub-calls run unpinned, and don't waste an HTTP round-trip on it.
   if (ctx.node.isConflicted()) return undefined;
@@ -255,7 +266,10 @@ const isPinnedSessionGone = (err: unknown): boolean =>
  */
 export const ROUTING_NOTICE_TTL_MS = 10_000;
 
-let sessionCountCache: { sessions: readonly PluginSessionInfo[]; at: number } | null = null;
+let sessionCountCache: {
+  sessions: readonly PluginSessionInfo[];
+  at: number;
+} | null = null;
 
 /** Test seam: forget the cached session count. */
 export const resetRoutingNoticeCache = (): void => {
@@ -297,6 +311,45 @@ const sessionDispatch =
  * Resolve this process's claimed session, asking the plugins for their file names only if the cheap
  * check fails (see routing/target.ts's SessionSource).
  */
+const probedSessions =
+  (ctx: DispatchContext): (() => Promise<readonly PluginSessionInfo[]>) =>
+  async () =>
+    namedSessions(await listPluginSessions(ctx), sessionDispatch(ctx));
+
+/** Resolve a call's `file` argument against what is connected now (routing/file-ref.ts). */
+export const resolveCallRoute = (ctx: DispatchContext, ref: string): Promise<CallRoute> =>
+  resolveFileRef(() => listPluginSessions(ctx), probedSessions(ctx), ref);
+
+/**
+ * Dispatch inside a call that named its file. Same recovery rule as a claim: only a call the relay
+ * refused up front (its pinned session was already gone) is re-sent, to the one file that matches
+ * what the call was routed to. A call that had been sent and lost its plugin is answered "plugin
+ * closed before answering" and surfaces as is — re-sending a write to a new panel, whose
+ * idempotency cache is empty, could apply it twice.
+ */
+const dispatchRouted = async (
+  ctx: DispatchContext,
+  callRoute: CallRoute,
+  toolName: string,
+  args: unknown,
+  opts: DispatchOptions,
+): Promise<unknown> => {
+  try {
+    return await dispatchTool(ctx, toolName, args, {
+      ...opts,
+      sessionId: callRoute.sessionId,
+    });
+  } catch (err) {
+    if (!isPinnedSessionGone(err)) throw err;
+    const recovered = await recoverCallRoute(probedSessions(ctx), callRoute);
+    updateCallRoute(recovered);
+    return dispatchTool(ctx, toolName, args, {
+      ...opts,
+      sessionId: recovered.sessionId,
+    });
+  }
+};
+
 const resolveTargetFor = async (ctx: DispatchContext): Promise<string | undefined> =>
   resolveFileTarget(
     () => listPluginSessions(ctx),
@@ -322,6 +375,9 @@ export const dispatchTargeted = async (
   args: unknown,
   opts: DispatchOptions = {},
 ): Promise<unknown> => {
+  const callRoute = getCallRoute();
+  if (callRoute !== null) return dispatchRouted(ctx, callRoute, toolName, args, opts);
+
   const target = getFileTarget();
   if (target === null) {
     // Best-effort: a warning that cannot be produced must never take the call down with it.
@@ -330,7 +386,10 @@ export const dispatchTargeted = async (
   }
 
   try {
-    return await dispatchTool(ctx, toolName, args, { ...opts, sessionId: target.sessionId });
+    return await dispatchTool(ctx, toolName, args, {
+      ...opts,
+      sessionId: target.sessionId,
+    });
   } catch (err) {
     if (!isPinnedSessionGone(err)) throw err;
     // Throws (with the file named, and what is connected instead) when the binding cannot be

@@ -21,6 +21,8 @@ import type { CallToolResult } from '@modelcontextprotocol/server';
 export interface NoticeBox {
   skew: string | null;
   routing: string | null;
+  /** Which file a call that named one (`file`) was answered by — see routing/file-ref.ts. */
+  routed: string | null;
 }
 
 const store = new AsyncLocalStorage<NoticeBox>();
@@ -43,7 +45,7 @@ export const captureNotices = async (
   run: () => Promise<CallToolResult>,
   finish: (result: CallToolResult, notices: NoticeBox) => CallToolResult,
 ): Promise<CallToolResult> => {
-  const box: NoticeBox = { skew: null, routing: null };
+  const box: NoticeBox = { skew: null, routing: null, routed: null };
   try {
     const result = await store.run(box, run);
     return finish(result, box);
@@ -127,5 +129,25 @@ export const withSkewNotice = (result: CallToolResult, notice: string | null): C
   return {
     ...result,
     content: [...result.content, { type: 'text' as const, text: asBlock(notice) }],
+  };
+};
+
+/** Record which file answered a call that named one. Last write wins: recovery re-points it. */
+export const reportRouted = (line: string): void => {
+  const box = store.getStore();
+  if (box !== undefined) box.routed = line;
+};
+
+/**
+ * Append the one-line routing receipt to a call that named its file. Short on purpose — it rides on
+ * every such call — and only on those, so a caller that never passes `file` sees no change at all.
+ * It is what lets an agent running calls against several files check, per result, which file
+ * answered, without a second round-trip.
+ */
+export const withRoutedNotice = (result: CallToolResult, line: string | null): CallToolResult => {
+  if (line === null) return result;
+  return {
+    ...result,
+    content: [...result.content, { type: 'text' as const, text: `\n\n↳ ${line}` }],
   };
 };

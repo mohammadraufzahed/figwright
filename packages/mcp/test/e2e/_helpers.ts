@@ -59,11 +59,13 @@ export interface FakePluginOptions {
   handlers: Record<string, (params: unknown) => unknown>;
   /** Defaults to a version the server is happy with; override to exercise the skew warning. */
   clientVersion?: string;
+  /** Upgrade headers, as a Figma client adds them (figma-linux-next's X-Figma-File-Key). */
+  headers?: Record<string, string>;
 }
 
 export const connectFakePlugin = async (opts: FakePluginOptions): Promise<WebSocket> => {
   const sessionId = opts.sessionId ?? newId();
-  const ws = new WebSocket(`ws://127.0.0.1:${opts.port}`);
+  const ws = new WebSocket(`ws://127.0.0.1:${opts.port}`, { headers: opts.headers ?? {} });
 
   await new Promise<void>((resolve, reject) => {
     const onError = (err: Error): void => reject(err);

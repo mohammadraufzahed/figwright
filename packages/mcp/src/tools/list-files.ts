@@ -16,8 +16,9 @@ export const listFilesTool: ToolSpec = {
     'touched (routed: true) — which changes under you when they switch tabs. Claim one with ' +
     'use_file so this agent stays in it. bound marks the file this agent has claimed. ' +
     'duplicateName marks entries sharing a name (Figma allows it; "x (Copy)" is the usual way), ' +
-    'for which use_file needs the sessionId rather than the name. fileKey is always null: only ' +
-    'private-org plugins can read it.',
+    'for which use_file needs the sessionId rather than the name. Any of these can also be passed ' +
+    'as the file argument of a single call, to reach that file without claiming it. fileKey is ' +
+    'null unless the Figma client reports it (figma-linux-next does; public plugins cannot read it).',
   inputSchema: z.object({}),
   // Still a read on the wire, under its own name: the server dispatches `list_files` to each
   // connected session and the plugin's handler is unchanged. Only the aggregation across sessions
@@ -106,7 +107,11 @@ export const probeSessions = async (
         const file = reply.files[0];
         if (file === undefined) throw new Error('plugin returned no file');
         return {
-          session: { ...session, fileName: file.fileName, pageName: file.currentPage.name },
+          session: {
+            ...session,
+            fileName: file.fileName,
+            pageName: file.currentPage.name,
+          },
           fileKey: file.fileKey,
           currentPage: file.currentPage,
         };
@@ -144,7 +149,7 @@ export const handleListFiles = async (
       pluginVersion: probed.session.pluginVersion,
       routed: probed.session.id === routedId,
       bound: probed.session.id === target?.sessionId,
-      fileKey: probed.fileKey,
+      fileKey: probed.fileKey ?? probed.session.fileKey ?? null,
       fileName: probed.session.fileName,
       currentPage: probed.currentPage,
     };

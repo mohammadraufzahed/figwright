@@ -33,6 +33,10 @@ share a name — Figma allows that, and `x (Copy)` is how it happens). Every lat
 that file whatever is in front, including while its tab sits in the background. If the user has not
 said which file, ask — do not guess from the names.
 
+A task that spans files — reading one and writing another — passes `file` on each call instead of
+re-claiming: a `sessionId` or name from `list_files`, or a Figma link when `list_files` shows a
+`fileKey`. It applies to that call only, and the result's last line names the file that answered.
+
 ## First, understand the environment, then build (provider-first)
 
 The write-side mirror of codegen's grounding, and the **most important habit**: an off-looking build

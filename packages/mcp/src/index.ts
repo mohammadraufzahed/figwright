@@ -17,6 +17,7 @@ import {
   dispatchTargeted,
   dispatchTool,
   listPluginSessions,
+  resolveCallRoute,
   resolveRoutingSession,
 } from './dispatch.js';
 import { Election } from './election/election.js';
@@ -28,6 +29,7 @@ import { SERVER_INSTRUCTIONS } from './instructions.js';
 import { wireShutdown } from './lifecycle.js';
 import { normalizeBatchOpIds, normalizeIdArgs } from './node-id.js';
 import { PROMPTS } from './prompts/registry.js';
+import { describeCallRoute, getCallRoute, runWithCallRoute } from './routing/file-ref.js';
 import { ANALYZE_PROJECT_TOOL_NAME, handleAnalyzeProject } from './tools/analyze-project.js';
 import { annotationsFor } from './tools/annotations.js';
 import { BATCH_TOOL_NAME } from './tools/batch.js';
@@ -46,9 +48,15 @@ import {
   resolveImagePath,
 } from './tools/import-image.js';
 import { handleListFiles, LIST_FILES_TOOL_NAME } from './tools/list-files.js';
-import { captureNotices, withRoutingNotice, withSkewNotice } from './tools/notices.js';
+import {
+  captureNotices,
+  reportRouted,
+  withRoutedNotice,
+  withRoutingNotice,
+  withSkewNotice,
+} from './tools/notices.js';
 import { formatPingResult, handlePing, pingTool } from './tools/ping.js';
-import { ALL_TOOL_SPECS } from './tools/registry.js';
+import { ALL_TOOL_SPECS, FILE_ARG, FILE_ROUTED_TOOL_NAMES } from './tools/registry.js';
 import { assertWithinLimit, fitNodeList } from './tools/result-budget.js';
 import { handleSaveImageFills, SAVE_IMAGE_FILLS_TOOL_NAME } from './tools/save-image-fills.js';
 import { handleSaveScreenshots, SAVE_SCREENSHOTS_TOOL_NAME } from './tools/save-screenshots.js';
@@ -74,7 +82,11 @@ const envPort = Number(process.env.FIGWRIGHT_PORT);
 const PORT = Number.isInteger(envPort) && envPort > 0 && envPort < 65_536 ? envPort : DEFAULT_PORT;
 
 const node = new Node({ serverVersion: SERVER_VERSION, port: PORT, log });
-const follower = new Follower({ leaderUrl: node.leaderUrl, log, buildId: BUILD_ID });
+const follower = new Follower({
+  leaderUrl: node.leaderUrl,
+  log,
+  buildId: BUILD_ID,
+});
 const election = new Election({ node, follower, buildId: BUILD_ID, log });
 
 let currentDetach: (() => void) | null = null;
@@ -90,7 +102,11 @@ node.onRoleChange(role => {
       // node that finds the port bound by something that won't answer /ping, which is the single
       // failure the election cannot resolve by waiting (see election/leader-lock.ts). Best-effort —
       // a server that can't write it still leads.
-      writeLeaderLock({ port: res.port, buildId: BUILD_ID, serverVersion: SERVER_VERSION });
+      writeLeaderLock({
+        port: res.port,
+        buildId: BUILD_ID,
+        serverVersion: SERVER_VERSION,
+      });
       currentDetach = attachLeaderEndpoints(res.http, {
         relay: res.relay,
         serverVersion: SERVER_VERSION,
@@ -132,6 +148,28 @@ const routedDispatch = async (): Promise<typeof dispatch> => {
   const sessionId = await resolveRoutingSession(dispatchCtx);
   const opts = sessionId === undefined ? {} : { sessionId };
   return (tool, args) => dispatchTool(dispatchCtx, tool, args, opts);
+};
+
+/**
+ * Honour a call's `file` argument: resolve it once, strip it (it is server-only, so no plugin ever
+ * sees it), and run the whole call — every sub-call of a multi-call tool included — pinned to that
+ * file. Without `file` the call runs exactly as before: claim, else foreground.
+ */
+const runRoutedByFile = async (
+  tool: string,
+  args: Record<string, unknown>,
+  run: ToolHandler,
+): Promise<CallToolResult> => {
+  const { [FILE_ARG]: file, ...rest } = args;
+  if (typeof file !== 'string' || !FILE_ROUTED_TOOL_NAMES.has(tool)) return run(args);
+  const callRoute = await resolveCallRoute(dispatchCtx, file);
+  return runWithCallRoute(callRoute, async () => {
+    try {
+      return await run(rest);
+    } finally {
+      reportRouted(describeCallRoute(getCallRoute() ?? callRoute));
+    }
+  });
 };
 
 const textResult = (data: unknown): CallToolResult => ({
@@ -268,13 +306,18 @@ const createMcpServer = (): McpServer => {
         spec.name,
         await captureNotices(
           () =>
-            run(
+            runRoutedByFile(
+              spec.name,
               spec.name === BATCH_TOOL_NAME
                 ? normalizeBatchOpIds(normalizeIdArgs(args))
                 : normalizeIdArgs(args),
+              run,
             ),
           (result, notices) =>
-            withSkewNotice(withRoutingNotice(result, notices.routing), notices.skew),
+            withSkewNotice(
+              withRoutingNotice(withRoutedNotice(result, notices.routed), notices.routing),
+              notices.skew,
+            ),
         ),
       );
     // The spec's own Zod object goes straight through: it is already the Standard Schema object the

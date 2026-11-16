@@ -17,6 +17,12 @@ export interface PluginSessionInfo {
   pageName: string | null;
   lastActivityAt: number;
   pluginVersion: string;
+  /**
+   * The Figma file key, when the Figma client stamped it on the plugin's connection
+   * (`X-Figma-File-Key`, sent by figma-linux-next). Public plugins cannot read it themselves, so it
+   * is absent on the official desktop app and from leaders that predate the field.
+   */
+  fileKey?: string | null;
 }
 
 /**
