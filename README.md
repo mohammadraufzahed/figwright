@@ -362,6 +362,16 @@ By default calls follow whichever file you last touched, so switching tabs switc
 
 The claim belongs to that agent's own server process, so it never affects the other agent, it survives closing and reopening the plugin panel, and calls keep reaching the file even while its tab sits in the background. That process is also the unit: one per MCP client, so the agents have to be separate clients — two editors, or two terminals. Everything inside one of them, subagents included, shares a server and therefore shares a claim. If two open files share a name (`x` and a second `x`), `use_file` refuses the name and asks for the `sessionId` that `list_files` prints, rather than guessing. Release it with `use_file({ release: true })` to go back to following the foreground file.
 
+One agent can also work on several files without claiming any: every tool that reaches a file takes an optional `file` argument, resolved for that call only. It takes a `sessionId` or file name from `list_files`, or a Figma link. On the official desktop app (Windows, macOS) a link reaches the open file whose name matches the name in the link, when exactly one does — a link to a Community original does not reach your `(Copy)`. A Figma client that reports file keys, such as [figma-linux-next](https://github.com/arximus88/figma-linux-next), matches links and bare file keys exactly, so two files with the same name stay apart. It outranks the claim, never changes it, keeps every step of a multi-call tool such as `get_design_context` in that file, and each result ends with a line naming the file that answered:
+
+```text
+> copy the button tokens from Brand into Marketing Site
+  → get_variable_defs({ file: "Brand" })
+  → create_variable({ file: "Marketing Site", … })
+```
+
+Calls naming different files can run in parallel. A name that matches two open files, or nothing, is refused with what is connected. If the panel was closed before a call was sent, the call follows the reopened panel when exactly one file still matches; a write whose panel closed after it was sent is reported, never re-sent. `batch` takes `file` once for all its operations — one batch stays inside one file.
+
 </details>
 
 ## Contributing

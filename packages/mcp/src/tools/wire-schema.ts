@@ -114,6 +114,17 @@ export const checkBatchOps = (args: unknown): WireRejection | null => {
     const tool = (op as { tool?: unknown } | null)?.tool;
     if (typeof tool !== 'string') return null;
 
+    const params = (op as { params?: unknown }).params;
+    if (typeof params === 'object' && params !== null && Object.hasOwn(params, 'file')) {
+      return {
+        code: ErrorCode.InvalidParams,
+        message:
+          `batch ops[${index}]: file is not accepted on an op — a batch applies atomically, with ` +
+          'one rollback and one undo step, inside one file. Pass file once on the batch itself; ' +
+          'for two files, send two batches.',
+      };
+    }
+
     const schema = WIRE_TOOL_SCHEMAS.get(tool);
     if (schema === undefined) {
       return {
@@ -148,7 +159,10 @@ export const checkBatchOps = (args: unknown): WireRejection | null => {
 export const checkWireCall = (toolName: string, args: unknown): WireRejection | null => {
   const schema = WIRE_TOOL_SCHEMAS.get(toolName);
   if (schema === undefined) {
-    return { code: ErrorCode.MethodNotFound, message: `no tool named '${toolName}'` };
+    return {
+      code: ErrorCode.MethodNotFound,
+      message: `no tool named '${toolName}'`,
+    };
   }
 
   // An omitted `args` is how a no-argument tool is called, and it is what the plugin sees as an

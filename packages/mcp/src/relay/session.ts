@@ -14,6 +14,8 @@ export interface Session {
   lastActivityAt: number;
   /** Latest file + page reported by this session's `$activity` events — for ping observability. */
   fileName: string | null;
+  /** The file key the Figma client stamped on this session's latest upgrade, if any. */
+  fileKey: string | null;
   pageId: string | null;
   pageName: string | null;
   heartbeat: HeartbeatMonitor | null;
@@ -31,7 +33,12 @@ export const DEFAULT_DISCONNECT_GRACE_MS = 30_000;
 export class SessionManager {
   private readonly sessions = new Map<string, Session>();
 
-  register(input: { id: string; socket: WebSocket; clientVersion: string }): {
+  register(input: {
+    id: string;
+    socket: WebSocket;
+    clientVersion: string;
+    fileKey?: string | null;
+  }): {
     session: Session;
     resumed: boolean;
   } {
@@ -68,6 +75,8 @@ export class SessionManager {
       // Filled in by the first `$activity` event; null until then (a plugin that hasn't sent any
       // context push yet — e.g. mid-handshake — is still routable but won't have a display label).
       fileName: existing?.fileName ?? null,
+      // Re-read on every upgrade: the header describes the tab this socket came from.
+      fileKey: input.fileKey ?? null,
       pageId: existing?.pageId ?? null,
       pageName: existing?.pageName ?? null,
       heartbeat: null,

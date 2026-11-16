@@ -317,12 +317,65 @@ const DECLARED_TOOL_SPECS: readonly ToolSpec[] = [
  * server-injected fields it has to declare completely, and closing it has a fail-closed failure
  * mode of its own that wants its own evidence.
  */
+/** The per-call file selector every plugin-reaching tool accepts (routing/file-ref.ts). */
+export const FILE_ARG = 'file';
+
+/**
+ * The tools that never reach a single file's plugin: they answer about every connected file, or
+ * read only the filesystem, so a `file` on them would have nothing to choose.
+ */
+const UNROUTED_TOOL_NAMES: ReadonlySet<string> = new Set([
+  pingTool.name,
+  listFilesTool.name,
+  useFileTool.name,
+  analyzeProjectTool.name,
+  scanComponentsTool.name,
+]);
+
+const fileSelector = z
+  .string()
+  .min(1)
+  .optional()
+  .describe(
+    'Which open Figma file this call goes to: a sessionId or name from list_files, or a Figma ' +
+      'URL. Default: the use_file claim, else the file last touched.',
+  );
+
+/**
+ * Add `file` to a spec, as a server-only argument: it is resolved to a session before dispatch and
+ * stripped from the payload, so the plugin contract — and every plugin already installed — is
+ * unchanged. A local spec whose `serverOnlyArgs` is null borrows another tool's handler and is not
+ * recorded under its own name, so it stays null.
+ */
+const withFileSelector = (spec: ToolSpec): ToolSpec => {
+  if (UNROUTED_TOOL_NAMES.has(spec.name)) return spec;
+  if (FILE_ARG in spec.inputSchema.shape) {
+    throw new Error(`${spec.name} already declares "${FILE_ARG}", which is the routing selector`);
+  }
+  const serverOnlyArgs =
+    spec.serverOnlyArgs === null || (spec.kind === 'local' && spec.serverOnlyArgs === undefined)
+      ? spec.serverOnlyArgs
+      : [...(spec.serverOnlyArgs ?? []), FILE_ARG];
+  return {
+    ...spec,
+    inputSchema: spec.inputSchema.extend({ [FILE_ARG]: fileSelector }),
+    ...(serverOnlyArgs === undefined ? {} : { serverOnlyArgs }),
+  };
+};
+
 const strictArgs = (spec: ToolSpec): ToolSpec => ({
   ...spec,
   inputSchema: z.strictObject(spec.inputSchema.shape),
 });
 
-export const ALL_TOOL_SPECS: readonly ToolSpec[] = DECLARED_TOOL_SPECS.map(strictArgs);
+export const ALL_TOOL_SPECS: readonly ToolSpec[] = DECLARED_TOOL_SPECS.map(spec =>
+  strictArgs(withFileSelector(spec)),
+);
+
+/** Every tool that accepts the per-call `file` selector. */
+export const FILE_ROUTED_TOOL_NAMES: ReadonlySet<string> = new Set(
+  ALL_TOOL_SPECS.filter(spec => !UNROUTED_TOOL_NAMES.has(spec.name)).map(spec => spec.name),
+);
 
 /**
  * Write tools get a server-generated requestId (stable across dispatch retries) so the plugin can
